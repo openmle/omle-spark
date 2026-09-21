@@ -1,0 +1,26 @@
+# ── Scala / sbt ──────────────────────────────────────────────────────────────
+target/
+project/target/
+project/project/
+.bsp/
+.bloop/
+.metals/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+/python/dist/
+/python/build/
+/python/wheelhouse/
+/python/omle_spark/_version.py
+
+# Staged by scripts/stage_jars.py before the wheel build; build output.
+/python/omle_spark/jars/
+
+# ── Editors / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/

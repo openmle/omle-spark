@@ -1,0 +1,143 @@
+name: Tests
+
+# omle-spark depends on omle-runtime through Maven Central, not through a
+# sibling checkout, so nothing here compiles C++ or builds a jar first. That is
+# the whole point of the split: these jobs need a JDK and sbt, and the version
+# under test is the pin in build.sbt.
+#
+# Two surfaces are tested, and they are genuinely different code paths:
+#
+#   scala   — the transformer itself, cross-built for 2.12 and 2.13
+#   pyspark — the Python wrapper driving that transformer over py4j, against
+#             the PySpark distribution each Scala version pairs with
+#
+# Scala 2.12 and 2.13 are binary-incompatible and PyPI ships Spark 3.x built
+# against the former, 4.x against the latter. A jar loaded into the wrong one
+# does not fail at load: the class is simply absent and PySpark reports
+# "'JavaPackage' object is not callable", which names no cause. Both
+# combinations are therefore exercised explicitly.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Style — runs .pre-commit-config.yaml, the same file the local git hook runs.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: pip install pre-commit
+      # --show-diff-on-failure prints the patch the autofixing hooks would have
+      # applied, so a red build hands back the fix rather than just a rule name.
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  # ---------------------------------------------------------------------------
+  # The Scala transformer, both cross-built versions.
+  # ---------------------------------------------------------------------------
+  scala:
+    name: Scala (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+
+      # `+test` runs the suite under every entry in crossScalaVersions. The
+      # native library each test loads comes from the omle-runtime jar that sbt
+      # resolves, so there is no -Djna.library.path and nothing to build first.
+      - name: Cross-test
+        run: sbt +test
+
+  # ---------------------------------------------------------------------------
+  # The PySpark wrapper, against both Spark lines.
+  # ---------------------------------------------------------------------------
+  pyspark:
+    name: PySpark ${{ matrix.spark.pyspark }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        spark:
+          # Each row pairs a PySpark release with the Scala version it was
+          # built against; see the note at the top of this file.
+          - pyspark: "3.5.3"
+            scala: "2.12.18"
+            scala_bin: "2.12"
+            python: "3.11"
+          - pyspark: "4.0.2"
+            scala: "2.13.14"
+            scala_bin: "2.13"
+            python: "3.12"
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ matrix.spark.python }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+
+      # Only the Scala version this row needs, not both: `sbt +package` would
+      # double the work for a job that loads exactly one of the jars.
+      - name: Build the transformer jar
+        run: sbt ++${{ matrix.spark.scala }} package
+
+      # stage_jars.py reads the dependency paths sbt resolved rather than
+      # globbing the Coursier cache, whose layout differs per platform.
+      - name: Export the resolved dependencies
+        run: |
+          mkdir -p target
+          sbt ++${{ matrix.spark.scala }} \
+            'set Compile / fullClasspath / exportJars := true' \
+            'export Compile / dependencyClasspath' \
+            | tr ':' '\n' | grep '\.jar$' > target/dependency-jars.txt
+          wc -l < target/dependency-jars.txt | sed 's/^/resolved jars: /'
+
+      - name: Stage the jars into the package
+        # --scala, because the step above built one version rather than both:
+        # this row loads exactly one, and staging defaults to requiring the
+        # pair a published wheel needs.
+        #
+        # No --require-natives either. CI tests against whatever omle-runtime
+        # release build.sbt pins, including a pre-release that may not yet ship
+        # natives; publish.yml is where that becomes a hard requirement.
+        run: python scripts/stage_jars.py --scala ${{ matrix.spark.scala_bin }}
+
+      - name: Install and test
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pyspark==${{ matrix.spark.pyspark }}"
+          pip install -e ".[dev]"
+          pytest -q

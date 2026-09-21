@@ -1,0 +1,165 @@
+name: Publish omle-spark
+
+# Publishes two artifacts from one tag:
+#
+#   * the Scala transformer to Maven Central, cross-built for 2.12 and 2.13
+#   * the PySpark wrapper to PyPI, as a wheel bundling those jars plus the
+#     omle-runtime jar and JNA
+#
+# The Python wheel is pure-Python and platform-independent — the jars inside it
+# are JVM bytecode, and the native libraries come from omle-runtime's jar, which
+# carries one per platform at JNA's resource paths. So one wheel serves every
+# platform and interpreter, unlike omle-runtime's own wheels.
+#
+# fetch-depth: 0 throughout: the version comes from git tags, via sbt-dynver on
+# the Scala side and setuptools-scm on the Python side. A shallow clone yields a
+# 0.1.dev1+g<sha> that neither index should receive.
+
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Index to publish the Python wheel to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. The Scala artifact → Maven Central.
+  # ---------------------------------------------------------------------------
+  maven:
+    name: Publish the Scala artifact
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+
+      - name: Publish
+        # `ci-release` cross-publishes signed artifacts for both Scala versions
+        # and, on a tagged commit, releases them. sbt-ci-release reads all four
+        # secrets from the environment under exactly these names.
+        env:
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          PGP_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          SONATYPE_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: sbt ci-release
+
+  # ---------------------------------------------------------------------------
+  # 2. The PySpark wheel → PyPI.
+  # ---------------------------------------------------------------------------
+  wheel:
+    name: Build the wheel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+
+      # Both Scala versions: a wheel carrying only one silently fails on the
+      # other PySpark line with "'JavaPackage' object is not callable".
+      - name: Cross-build the transformer
+        run: sbt +package
+
+      - name: Export the resolved dependencies
+        # stage_jars.py reads these paths rather than globbing the Coursier
+        # cache, whose layout is platform-specific.
+        run: |
+          mkdir -p target
+          sbt 'set Compile / fullClasspath / exportJars := true' \
+              'export Compile / dependencyClasspath' \
+            | tr ':' '\n' | grep '\.jar$' > target/dependency-jars.txt
+          wc -l < target/dependency-jars.txt | sed 's/^/resolved jars: /'
+
+      - name: Stage the jars into the package
+        # --require-natives, unlike in test.yml: a published wheel whose
+        # omle-runtime jar carries no native libraries installs and imports
+        # cleanly, then fails with UnsatisfiedLinkError the first time anyone
+        # calls transform. Releases before 0.1.0-rc9 were exactly that.
+        run: python scripts/stage_jars.py --require-natives
+
+      - name: Build
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Verify the jars reached the wheel
+        working-directory: python
+        # A wheel missing them installs and imports; jars() only raises when
+        # someone builds a session. Cheapest place to catch it is here.
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          jars = sorted(n for n in names if n.startswith("omle_spark/jars/"))
+          for n in jars:
+              print(f"  {n}")
+          need = ["omle_spark/jars/omle-spark_2.12-",
+                  "omle_spark/jars/omle-spark_2.13-",
+                  "omle_spark/jars/omle-runtime-",
+                  "omle_spark/jars/jna-"]
+          missing = [p for p in need if not any(n.startswith(p) for n in jars)]
+          if missing:
+              sys.exit(f"::error::wheel is missing {missing}")
+          print(f"{whl}: {len(jars)} jars present")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: python/dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish to ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    needs: wheel
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    permissions:
+      # Trusted Publishing: a short-lived OIDC token rather than a long-lived
+      # API token in secrets. Configure the publisher once at
+      # https://pypi.org/manage/project/omle-spark/settings/publishing/
+      # naming this repository, publish.yml, and the environment above.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: dist
+
+      - run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

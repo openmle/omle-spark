@@ -1,0 +1,21 @@
+# Optional but recommended:
+#   pip install pre-commit && pre-commit install
+#
+# `ruff check` enforces the Python style configured in python/pyproject.toml.
+# There is no C++ here, so no clang-format hook — the Scala side is formatted by
+# hand, consistent with how it was maintained inside omle-runtime.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-case-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]

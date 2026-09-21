@@ -1,0 +1,180 @@
+# OMLE Spark
+
+Score [OMLE](https://github.com/openmle/omle) models on Spark DataFrames, from
+Scala or PySpark.
+
+`OMLEModel` is a plain Spark ML `Transformer`, so it drops into a `Pipeline`
+like any other stage. Scoring runs natively inside the executors — one
+[omle-runtime](https://github.com/openmle/omle-runtime) session per partition —
+rather than through a Python UDF.
+
+---
+
+## Installation
+
+### Scala
+
+```scala
+libraryDependencies += "io.github.openmle" %% "omle-spark" % "0.1.0"
+```
+
+Cross-built for Scala 2.12 and 2.13, which is not cosmetic: Spark 3.5 is built
+against 2.12 and Spark 4.x against 2.13, and the two are binary incompatible.
+`%%` picks the right one from your `scalaVersion`. In Maven the Scala version is
+part of the artifact id:
+
+```xml
+<dependency>
+  <groupId>io.github.openmle</groupId>
+  <artifactId>omle-spark_2.13</artifactId>
+  <version>0.1.0</version>
+</dependency>
+```
+
+The `omle-runtime` jar comes transitively and carries the native library for
+every supported platform at JNA's resource paths, so each executor JVM extracts
+its own copy and nothing has to be installed on the nodes.
+
+### PySpark
+
+```bash
+pip install omle-spark
+```
+
+The wheel bundles every jar the JVM side needs — the transformer for both Scala
+versions, `omle-runtime`, and JNA — and picks the pair matching the installed
+PySpark. Jars cannot be added to a JVM that is already running, so they have to
+be named when the session is built:
+
+```python
+import omle_spark
+from pyspark.sql import SparkSession
+
+spark = (SparkSession.builder
+         .config("spark.jars", omle_spark.jars_classpath())
+         .getOrCreate())
+```
+
+`spark.jars` ships them to the executors too. Configuring this after
+`getOrCreate()` has no effect, and `transform` then fails with `'JavaPackage'
+object is not callable` — which names no cause.
+
+---
+
+## Scala
+
+```scala
+import io.github.openmle.spark.OMLEModel
+import org.apache.spark.ml.feature.VectorAssembler
+
+val df = Seq((0.1f, 0.9f), (0.7f, 0.2f)).toDF("f0", "f1")
+
+val features = new VectorAssembler()
+  .setInputCols(Array("f0", "f1"))
+  .setOutputCol("features")
+  .transform(df)
+
+// loadFile opens the model once on the driver, so a bad path fails here
+// rather than inside transform on every executor.
+val model = OMLEModel.loadFile("/path/to/model.omle")
+  .setFeaturesCol("features")
+  .setPredictionCol("prediction")
+  .setProbabilityCol("probability")
+
+model.transform(features).select("prediction", "probability").show()
+```
+
+`prediction` is always added, as a `Double`. `probability` is a `Vector` and is
+only added when the model produces more than one output column per row — so a
+regression model yields `prediction` alone, and selecting `probability` on one
+would fail.
+
+## PySpark
+
+Input columns are resolved from the model's declared input specs. A model with a
+single rank-2 input (`[-1, n_features]`) reads from `featuresCol`, the usual
+Spark ML convention for a pre-assembled vector:
+
+```python
+from omle_spark import OMLEModel
+from pyspark.ml.feature import VectorAssembler
+
+assembler = VectorAssembler(inputCols=["f0", "f1"], outputCol="features")
+
+model = OMLEModel.loadFile("/path/to/model.omle")
+predictions = model.transform(assembler.transform(df))
+predictions.select("prediction", "probability").show()
+```
+
+A model with multiple or scalar inputs reads each one by its spec name straight
+from the DataFrame, so no `VectorAssembler` is needed:
+
+```python
+# Converted from Pipeline([VectorAssembler(["a", "b"]), RandomForestClassifier()]);
+# the model's input specs are the scalar columns "a" and "b".
+model = OMLEModel.loadFile("/path/to/pipeline.omle")
+predictions = model.transform(raw_df)      # raw_df has columns "a" and "b"
+```
+
+The API mirrors the Scala side: the `OMLEModel.loadFile` factory, and the
+setters `setModelPath`, `setFeaturesCol`, `setPredictionCol` and
+`setProbabilityCol`, each returning `self` for chaining. `OMLEModel(modelPath=...)`
+still works and defers loading, which is what you want when the file only
+becomes readable on the executors.
+
+---
+
+## Building from source
+
+```bash
+sbt +package        # both Scala versions -> target/scala-2.1x/
+sbt +test           # ScalaTest against a local SparkSession
+```
+
+`omle-runtime` is resolved from Maven Central; the pinned version is
+`omleRuntimeVersion` at the top of `build.sbt`. Nothing here compiles C++, and
+no sibling checkout is needed.
+
+For the Python wheel, the jars have to be staged into the package first:
+
+```bash
+sbt +package
+sbt 'set Compile / fullClasspath / exportJars := true' \
+    'export Compile / dependencyClasspath' \
+  | tr ':' '\n' | grep '\.jar$' > target/dependency-jars.txt
+python scripts/stage_jars.py
+cd python && pip install -e ".[dev]" && pytest
+```
+
+`stage_jars.py` reads that dependency list rather than searching the Coursier
+cache, whose layout differs by platform.
+
+### Test fixtures
+
+`src/test/resources/*.omle` are generated by `scripts/gen_test_fixtures.py`,
+which builds them through the `omle` Python IR from a sibling checkout. Run it
+only when the models themselves need to change.
+
+`test_model_2f.omle` also exists in omle-runtime's Java tests. The two were
+produced by a single script while the projects shared a repository; they are
+independent now, so a change here has to be mirrored there deliberately.
+
+---
+
+## Related projects
+
+- [`omle`](https://github.com/openmle/omle) — the model IR and format
+- [`omle-convert`](https://github.com/openmle/omle-convert) — converters from
+  scikit-learn, XGBoost, LightGBM, CatBoost and Spark ML
+- [`omle-runtime`](https://github.com/openmle/omle-runtime) — the C++ inference
+  engine this builds on
+- [`omle-server`](https://github.com/openmle/omle-server) — OIP inference server
+
+## Contributing
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Install the git hooks with
+`pre-commit install`; CI runs the same configuration over all files.
+
+## License
+
+Apache-2.0
