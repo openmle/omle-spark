@@ -1,11 +1,7 @@
 name := "omle-spark"
 
 // The omle-runtime release this transformer is built and tested against.
-// Published jars from 0.1.0-rc9 onward carry the native library for every
-// supported platform at JNA's resource paths, so nothing here has to locate
-// libomleruntime: JNA extracts it from the classpath. Earlier release
-// candidates shipped classes only and will fail with UnsatisfiedLinkError.
-val omleRuntimeVersion = "0.1.0-rc9"
+val omleRuntimeVersion = "0.1.0-rc11"
 
 // Maven Central rejects a release without homepage, licenses, developers and
 // scmInfo. sbt-ci-release reads them from ThisBuild, and supplies the version

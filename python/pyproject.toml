@@ -30,16 +30,29 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
 ]
 
+[project.optional-dependencies]
+# pyspark is a hard dependency above, so it is deliberately absent here.
+# numpy is not: the package itself never imports it, only the tests do.
+dev = [
+    "pytest>=8.0",
+    "numpy>=1.23",
+    "ruff>=0.16",
+    # Local enforcement of .pre-commit-config.yaml. The hook lives in
+    # .git/hooks/, which no clone inherits, so it needs a one-time
+    # `pre-commit install` per checkout; CI runs the same config.
+    "pre-commit>=4.0",
+]
+
 [project.urls]
-Homepage = "https://github.com/openmle/omle-runtime"
-Source = "https://github.com/openmle/omle-runtime"
-Issues = "https://github.com/openmle/omle-runtime/issues"
+Homepage = "https://github.com/openmle/omle-spark"
+Source = "https://github.com/openmle/omle-spark"
+Issues = "https://github.com/openmle/omle-spark/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["omle_spark*"]
 
-# The JARs are staged into omle_spark/jars/ by spark/scripts/stage_jars.py
+# The JARs are staged into omle_spark/jars/ by scripts/stage_jars.py
 # before the wheel is built; they are build output, not sources, so they are
 # gitignored and have to be declared here to reach the wheel.
 [tool.setuptools.package-data]

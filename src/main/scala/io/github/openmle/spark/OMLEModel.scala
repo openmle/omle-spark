@@ -103,10 +103,16 @@ class OMLEModel(override val uid: String) extends Transformer {
       val hasStr   = (0 until n).exists(i => m.inputSpec(i).dtype() == DataType.STRING)
       if (hasStr) {
         val colNames = Array.tabulate(n)(i => m.inputSpec(i).name())
+        // Model.COL_*, not literals. These mirror OMLE_COL_* in the C header,
+        // and STRING moved from 1 to 2 when FLOAT64 support was added. A stale
+        // literal is not rejected anywhere: the runtime reads the char* array
+        // as double*, every row decodes to category index 0, and predictions
+        // are wrong without any error.
         val colTypes = Array.tabulate(n)(i =>
-          if (m.inputSpec(i).dtype() == DataType.STRING) 1 else 0)
+          if (m.inputSpec(i).dtype() == DataType.STRING) Model.COL_STRING
+          else Model.COL_FLOAT32)
         val cols: Array[Object] = Array.tabulate(n)(i =>
-          if (colTypes(i) == 1) Array("").asInstanceOf[Object]
+          if (colTypes(i) == Model.COL_STRING) Array("").asInstanceOf[Object]
           else new Array[Float](1).asInstanceOf[Object])
         m.predictColumns(colNames, colTypes, cols, 1).length
       } else {
@@ -153,7 +159,9 @@ class OMLEModel(override val uid: String) extends Transformer {
               // Per-column path: pass each input as its own typed array.
               val colNames = Array.tabulate(colIndices.length)(i =>
                 model.inputSpec(i).name())
-              val colTypes = colIsString.map(s => if (s) 1 else 0)
+              // See the note above on Model.COL_* versus integer literals.
+              val colTypes =
+                colIsString.map(s => if (s) Model.COL_STRING else Model.COL_FLOAT32)
               val cols: Array[Object] = Array.tabulate(colIndices.length) { i =>
                 if (colIsString(i)) {
                   Array.tabulate(nRows)(r => rows(r).getString(colIndices(i))): Object
