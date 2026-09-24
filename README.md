@@ -1,5 +1,10 @@
 # OMLE Spark
 
+[![PyPI](https://img.shields.io/pypi/v/omle-spark.svg)](https://pypi.org/project/omle-spark/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-spark_2.13.svg?label=maven%20%28scala%202.13%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-spark_2.13)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-spark_2.12.svg?label=maven%20%28scala%202.12%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-spark_2.12)
+[![Tests](https://github.com/openmle/omle-spark/actions/workflows/test.yml/badge.svg)](https://github.com/openmle/omle-spark/actions/workflows/test.yml)
+
 Score [OMLE](https://github.com/openmle/omle) models on Spark DataFrames, from
 Scala or PySpark.
 
