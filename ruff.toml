@@ -1,0 +1,28 @@
+# Ruff config for the whole repository.
+#
+# It lives here, not in python/pyproject.toml, because ruff resolves settings
+# per file by walking up from that file: a config under python/ governs the
+# package and nothing else. scripts/ has no pyproject.toml above it short of the
+# filesystem root, so it silently fell back to ruff's built-in defaults —
+# roughly E4/E7/E9/F — while the comment in python/pyproject.toml claimed both
+# paths shared one rule set. Two files were linted by rules nobody chose.
+#
+# A root ruff.toml is what makes that claim true: python/ and scripts/ resolve
+# to this file, so `pre-commit run --all-files` applies the same rules to every
+# Python file in the repository.
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = [
+    # Assigning a lambda is idiomatic in the benchmark-style helpers here.
+    "E731",
+]
+
+[lint.isort]
+# Without this, ruff files omle_spark as third-party and I001 demands it be
+# merged into the pyspark block (alphabetically "omle_spark" sorts first), which
+# reads as though the package were somebody else's. The function-level imports
+# in python/tests/ deliberately keep it in its own section.
+known-first-party = ["omle_spark"]

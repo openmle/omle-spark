@@ -1,7 +1,7 @@
 name := "omle-spark"
 
 // The omle-runtime release this transformer is built and tested against.
-val omleRuntimeVersion = "0.1.0-rc11"
+val omleRuntimeVersion = "0.1.0"
 
 // Maven Central rejects a release without homepage, licenses, developers and
 // scmInfo. sbt-ci-release reads them from ThisBuild, and supplies the version

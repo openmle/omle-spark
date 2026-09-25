@@ -89,21 +89,14 @@ jobs:
       - name: Cross-build the transformer
         run: sbt +package
 
-      - name: Export the resolved dependencies
-        # stage_jars.py reads these paths rather than globbing the Coursier
-        # cache, whose layout is platform-specific.
-        run: |
-          mkdir -p target
-          sbt 'set Compile / fullClasspath / exportJars := true' \
-              'export Compile / dependencyClasspath' \
-            | tr ':' '\n' | grep '\.jar$' > target/dependency-jars.txt
-          wc -l < target/dependency-jars.txt | sed 's/^/resolved jars: /'
-
       - name: Stage the jars into the package
+        # stage_jars.py resolves the dependency paths with sbt itself; no
+        # separate export step, so the list cannot be a stale leftover.
+        #
         # --require-natives, unlike in test.yml: a published wheel whose
         # omle-runtime jar carries no native libraries installs and imports
         # cleanly, then fails with UnsatisfiedLinkError the first time anyone
-        # calls transform. Releases before 0.1.0-rc9 were exactly that.
+        # calls transform.
         run: python scripts/stage_jars.py --require-natives
 
       - name: Build

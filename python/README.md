@@ -1,4 +1,9 @@
-# omle-spark
+# OMLE Spark
+
+[![PyPI](https://img.shields.io/pypi/v/omle-spark.svg)](https://pypi.org/project/omle-spark/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-spark_2.13.svg?label=maven%20%28scala%202.13%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-spark_2.13)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-spark_2.12.svg?label=maven%20%28scala%202.12%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-spark_2.12)
+[![Tests](https://github.com/openmle/omle-spark/actions/workflows/test.yml/badge.svg)](https://github.com/openmle/omle-spark/actions/workflows/test.yml)
 
 Score OMLE models on Spark DataFrames.
 
@@ -65,8 +70,16 @@ them individually.
 
 ## Related packages
 
-- [`omle`](https://pypi.org/project/omle/) — the model IR and converters
-- [`omle-runtime`](https://pypi.org/project/omle-runtime/) — the local runtime
+- [`omle`](https://pypi.org/project/omle/) — the model IR, protobuf I/O and
+  validation
+- [`omle-convert`](https://pypi.org/project/omle-convert/) — converters from
+  trained scikit-learn, XGBoost, LightGBM, CatBoost and Spark ML models
+- [`omle-runtime`](https://pypi.org/project/omle-runtime/) — the C++ inference
+  runtime, with a scikit-learn-style API
+- [`omle-server`](https://pypi.org/project/omle-server/) — Open Inference
+  Protocol server over REST and gRPC
+- [`omle-viewer`](https://pypi.org/project/omle-viewer/) — interactive DAG
+  viewer for Jupyter and the browser
 
 ## License
 

@@ -113,26 +113,23 @@ jobs:
       - name: Build the transformer jar
         run: sbt ++${{ matrix.spark.scala }} package
 
-      # stage_jars.py reads the dependency paths sbt resolved rather than
-      # globbing the Coursier cache, whose layout differs per platform.
-      - name: Export the resolved dependencies
-        run: |
-          mkdir -p target
-          sbt ++${{ matrix.spark.scala }} \
-            'set Compile / fullClasspath / exportJars := true' \
-            'export Compile / dependencyClasspath' \
-            | tr ':' '\n' | grep '\.jar$' > target/dependency-jars.txt
-          wc -l < target/dependency-jars.txt | sed 's/^/resolved jars: /'
-
       - name: Stage the jars into the package
+        # stage_jars.py resolves the dependency paths with sbt itself, so there
+        # is no separate export step to drift out of date.
+        #
         # --scala, because the step above built one version rather than both:
         # this row loads exactly one, and staging defaults to requiring the
-        # pair a published wheel needs.
+        # pair a published wheel needs. --sbt-scala keeps the resolution on
+        # this row's version too, so it does not pull the other one's Spark
+        # jars.
         #
         # No --require-natives either. CI tests against whatever omle-runtime
         # release build.sbt pins, including a pre-release that may not yet ship
         # natives; publish.yml is where that becomes a hard requirement.
-        run: python scripts/stage_jars.py --scala ${{ matrix.spark.scala_bin }}
+        run: |
+          python scripts/stage_jars.py \
+            --scala ${{ matrix.spark.scala_bin }} \
+            --sbt-scala ${{ matrix.spark.scala }}
 
       - name: Install and test
         working-directory: python

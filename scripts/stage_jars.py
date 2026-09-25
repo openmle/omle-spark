@@ -19,12 +19,12 @@ Spark 3.x built against 2.12 and 4.x against 2.13, so a wheel carrying only one
 silently fails on the other with `'JavaPackage' object is not callable`.
 
 The omle-runtime jar comes from Maven Central, resolved by sbt alongside the
-rest of the dependencies. Releases from 0.1.0-rc9 onward carry the native
-libraries under JNA's resource prefixes (linux-x86-64, darwin-aarch64, ...), so
-JNA extracts the right one from the classpath on each executor and no
--Djna.library.path is needed. Earlier release candidates shipped classes only;
---require-natives refuses to build a wheel around one of those, since it would
-install cleanly and then fail with UnsatisfiedLinkError at first use.
+rest of the dependencies. It carries the native libraries under JNA's resource
+prefixes (linux-x86-64, darwin-aarch64, ...), so JNA extracts the right one
+from the classpath on each executor and no -Djna.library.path is needed. A jar
+shipping classes only is what --require-natives refuses to build a wheel
+around: it would install cleanly and then fail with UnsatisfiedLinkError at
+first use.
 
 Run from anywhere:
 
@@ -34,7 +34,10 @@ Run from anywhere:
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -45,9 +48,21 @@ DEST = REPO / "python" / "omle_spark" / "jars"
 
 # omle-runtime and JNA are resolved from Maven Central by sbt rather than built
 # here, so they are collected out of the Coursier cache that `sbt package`
-# already populated. `sbt exportDependencies` writes their paths to this file;
-# see the CI workflow.
+# already populated, via the paths sbt reports for them.
+#
+# This file is regenerated on every run. It used to be written by the caller and
+# merely read here, which made a stale one invisible: bumping omleRuntimeVersion
+# in build.sbt left the previous release's path on disk, and staging copied that
+# jar into the wheel without a word. The result installs and imports cleanly,
+# then misbehaves at the ABI boundary — which is exactly how a renumbered
+# column-type constant once reached a published wheel.
 RUNTIME_JARS_LIST = REPO / "target" / "dependency-jars.txt"
+
+# Resolved for sbt's default scalaVersion unless --sbt-scala names another. One
+# resolution is enough either way: both artifacts taken from it are plain Java,
+# so omle-runtime and JNA are identical across 2.12 and 2.13. The omle-spark
+# jars are the per-version ones, and they come from target/scala-*/ instead.
+SBT_EXPORT_TASK = "export Compile / dependencyClasspath"
 
 # The directory names JNA looks under inside a JAR. omle-runtime's own release
 # workflow stages its libraries at exactly these paths.
@@ -74,17 +89,71 @@ def _find_spark_jars() -> dict[str, Path]:
     return {k: _newest(v) for k, v in found.items()}  # type: ignore[arg-type]
 
 
-def _resolved_jars() -> list[Path]:
-    """Dependency jars sbt resolved, read from target/dependency-jars.txt.
+def _refresh_jars_list(scala: str | None = None) -> int:
+    """Ask sbt for the dependency classpath and rewrite RUNTIME_JARS_LIST.
 
-    Written by the build (`sbt "export runtime:fullClasspath"` or the equivalent
-    task) because the Coursier cache layout is platform-specific and globbing it
-    is how the old JNA lookup came to work on macOS and fail on Linux.
+    The list is taken from sbt rather than by globbing the Coursier cache: the
+    cache layout is platform-specific, and globbing it is how the old JNA lookup
+    came to work on macOS and fail on Linux.
     """
+    sbt = shutil.which("sbt")
+    if sbt is None:
+        print("::error::sbt is not on PATH, so the dependency list cannot be "
+              "refreshed. Install sbt, or pass --no-refresh to reuse the "
+              f"existing {RUNTIME_JARS_LIST.name} (only safe when it was "
+              "generated for the current build.sbt).", file=sys.stderr)
+        return 1
+
+    cmd = [sbt, "-batch", "-Dsbt.log.noformat=true"]
+    if scala:
+        cmd.append(f"++{scala}")
+    cmd.append(SBT_EXPORT_TASK)
+
+    print("resolving dependencies: " + " ".join(cmd[3:]))
+    proc = subprocess.run(cmd, cwd=REPO, capture_output=True,
+                          text=True, check=False)
+    if proc.returncode != 0:
+        print(f"::error::sbt exited {proc.returncode} while resolving "
+              "dependencies:", file=sys.stderr)
+        for line in (proc.stdout + proc.stderr).splitlines()[-15:]:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
+    # `export` prints the classpath unadorned; sbt's own logging is bracketed.
+    # Splitting on os.pathsep rather than ":" keeps Windows drive letters intact.
+    entries = [
+        part.strip()
+        for line in proc.stdout.splitlines() if not line.startswith("[")
+        for part in line.split(os.pathsep)
+        if part.strip().endswith(".jar")
+    ]
+    if not entries:
+        print(f"::error::sbt succeeded but reported no jars for "
+              f"'{SBT_EXPORT_TASK}'. Output:", file=sys.stderr)
+        for line in proc.stdout.splitlines()[-15:]:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
+    RUNTIME_JARS_LIST.parent.mkdir(parents=True, exist_ok=True)
+    RUNTIME_JARS_LIST.write_text("\n".join(entries) + "\n")
+    print(f"  {len(entries)} jars -> "
+          f"{RUNTIME_JARS_LIST.relative_to(REPO)}")
+    return 0
+
+
+def _resolved_jars() -> list[Path]:
+    """Dependency jars sbt resolved, read from target/dependency-jars.txt."""
     if not RUNTIME_JARS_LIST.is_file():
         return []
     return [Path(line.strip()) for line in RUNTIME_JARS_LIST.read_text().splitlines()
             if line.strip() and Path(line.strip()).suffix == ".jar"]
+
+
+def _pinned_runtime_version() -> str | None:
+    """The omle-runtime version build.sbt asks for, if it can be read."""
+    m = re.search(r'^val\s+omleRuntimeVersion\s*=\s*"([^"]+)"',
+                  (REPO / "build.sbt").read_text(), re.MULTILINE)
+    return m.group(1) if m else None
 
 
 def _pick(jars: list[Path], stem: str) -> Path | None:
@@ -127,7 +196,27 @@ def main() -> int:
              "only one version with `sbt ++<version> package` should name it, "
              "otherwise staging fails on the absent one.",
     )
+    ap.add_argument(
+        "--sbt-scala", metavar="VERSION",
+        help="full Scala version to resolve against (e.g. 2.13.16), passed to "
+             "sbt as ++VERSION. The jars taken from the resolution are plain "
+             "Java and identical either way, so this is purely to avoid "
+             "resolving the default version's Spark dependencies in a job that "
+             "built the other one. Unrelated to --scala, which selects which "
+             "already-built omle-spark jars to stage.",
+    )
+    ap.add_argument(
+        "--no-refresh", action="store_true",
+        help="reuse the existing target/dependency-jars.txt instead of asking "
+             "sbt for it. For environments without sbt; the version check "
+             "below still refuses a list that disagrees with build.sbt.",
+    )
     args = ap.parse_args()
+
+    if args.no_refresh:
+        print(f"--no-refresh: reusing {RUNTIME_JARS_LIST.relative_to(REPO)}")
+    elif (rc := _refresh_jars_list(args.sbt_scala)) != 0:
+        return rc
 
     wanted = args.scala or ["2.12", "2.13"]
 
@@ -144,9 +233,18 @@ def main() -> int:
     runtime = _find_runtime_jar()
     if runtime is None:
         print(f"::error::no omle-runtime jar among the resolved dependencies "
-              f"listed in {RUNTIME_JARS_LIST}. Generate it with the sbt export "
-              "task before staging (see .github/workflows/publish.yml).",
-              file=sys.stderr)
+              f"listed in {RUNTIME_JARS_LIST}.", file=sys.stderr)
+        return 1
+
+    # Belt and braces. A refreshed list agrees with build.sbt by construction,
+    # so this only ever fires for --no-refresh — which is the one path that can
+    # still hand us last week's resolution.
+    pinned = _pinned_runtime_version()
+    if pinned and runtime.name != f"omle-runtime-{pinned}.jar":
+        print(f"::error::build.sbt pins omle-runtime {pinned} but the resolved "
+              f"dependencies name {runtime.name}. "
+              f"{RUNTIME_JARS_LIST.relative_to(REPO)} is stale; rerun without "
+              "--no-refresh.", file=sys.stderr)
         return 1
 
     jna = _find_jna_jar()
@@ -178,7 +276,7 @@ def main() -> int:
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
 
-    for jar in list(spark_jars.values()) + [runtime, jna]:
+    for jar in [*spark_jars.values(), runtime, jna]:
         shutil.copy2(jar, DEST / jar.name)
         print(f"staged {jar.name}  ({jar.stat().st_size / 1024:.0f} KB)")
 
